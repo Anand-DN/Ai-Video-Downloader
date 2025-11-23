@@ -1,139 +1,231 @@
-# backend/torrent_downloader.py
 import libtorrent as lt
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
+
+# Extended list of high-stability public trackers
+BEST_TRACKERS = [
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:80/announce",
+    "udp://tracker.coppersurfer.tk:6969/announce",
+    "udp://glotorrents.pw:6969/announce",
+    "udp://tracker.leechers-paradise.org:6969/announce",
+    "udp://p4p.arenabg.com:1337/announce",
+    "udp://tracker.internetwarriors.net:1337/announce",
+    "http://tracker.opentrackr.org:1337/announce",
+    "udp://9.rarbg.to:2710/announce",
+    "udp://9.rarbg.me:2780/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://ipv4.tracker.harry.lu:80/announce",
+]
+
 
 class TorrentDownloader:
     def __init__(self, download_dir: str):
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.session = lt.session()
-        self.session.listen_on(6881, 6891)
-        self.handles = {}  # torrent_id -> handle
-        self.cancel_events = {}  # torrent_id -> threading.Event
         
-    def add_torrent(self, torrent_id: str, magnet_link: str, progress_callback: Callable):
-        """Add a torrent download"""
-        params = {
-            'save_path': str(self.download_dir),
-            'storage_mode': lt.storage_mode_t.storage_mode_sparse,
+        # Create Session
+        self.session = lt.session()
+        
+        # ============================
+        # 🚀 MAXIMUM SPEED SETTINGS
+        # ============================
+        settings = {
+            'user_agent': 'qBittorrent/4.6.0',
+            'enable_dht': True,
+            'enable_lsd': True,
+            'enable_upnp': True,
+            'enable_natpmp': True,
+            'cache_size': 8192,
+            'cache_expiry': 120,
+            'connections_limit': 50000,
+            'active_downloads': 100,
+            'active_seeds': 100,
+            'active_limit': 20000,
+            'peer_connect_timeout': 10,
+            'request_timeout': 3,
+            'connection_speed': 1000,
+            'max_out_request_queue': 2000,
+            'max_allowed_in_request_queue': 5000,
+            'max_queued_disk_bytes': 100 * 1024 * 1024,
+            'send_buffer_low_watermark': 20 * 1024,
+            'send_buffer_watermark': 1024 * 1024,
+            'download_rate_limit': 0,
+            'upload_rate_limit': 1024 * 1024,
+            'tick_interval': 100,
+            'inactivity_timeout': 120,
+            'unchoke_slots_limit': 100,
+            'choking_algorithm': 1,
+            'seed_choking_algorithm': 1,
+            'mixed_mode_algorithm': 0,
         }
         
-        handle = lt.add_magnet_uri(self.session, magnet_link, params)
+        self.session.apply_settings(settings)
+        self.session.listen_on(40000, 60000)
+        
+        dht_routers = [
+            ("router.bittorrent.com", 6881),
+            ("router.utorrent.com", 6881),
+            ("router.bitcomet.com", 6881),
+            ("dht.transmissionbt.com", 6881),
+            ("dht.aelitis.com", 6881),
+        ]
+        for router, port in dht_routers:
+            self.session.add_dht_router(router, port)
+        
+        self.session.start_dht()
+        self.handles = {}
+        self.cancel_events = {}
+
+    def add_torrent(self, torrent_id: str, magnet: str, callback: Callable):
+        # ✅ FIXED: Use add_torrent_params object (compatible with all libtorrent versions)
+        params = lt.add_torrent_params()
+        params.save_path = str(self.download_dir)
+        
+        # Parse magnet URI
+        try:
+            params = lt.parse_magnet_uri(magnet)
+            params.save_path = str(self.download_dir)
+        except Exception as e:
+            print(f"[Torrent Error] Failed to parse magnet: {e}")
+            raise e
+        
+        # Add torrent to session
+        try:
+            handle = self.session.add_torrent(params)
+        except Exception as e:
+            print(f"[Torrent Error] Failed to add torrent: {e}")
+            raise e
+        
+        # Resume immediately (not paused)
+        handle.resume()
+        
+        # 🔥 SPEED BOOST: Inject ALL trackers immediately
+        print(f"[⚡] Injecting {len(BEST_TRACKERS)} trackers for max peer discovery...")
+        for tracker_url in BEST_TRACKERS:
+            handle.add_tracker({"url": tracker_url})
+        
+        # Aggressive peer discovery
+        handle.force_reannounce()
+        handle.force_dht_announce()
+        
+        # Set per-torrent speed limits (unlimited download, 1MB/s upload)
+        handle.set_download_limit(0)
+        handle.set_upload_limit(1024 * 1024)
+        
+        # Set max connections per torrent
+        handle.set_max_connections(1000)
+        handle.set_max_uploads(100)
+        
         self.handles[torrent_id] = handle
         self.cancel_events[torrent_id] = threading.Event()
         
-        # Start monitoring thread
-        thread = threading.Thread(
-            target=self._monitor_progress,
-            args=(torrent_id, handle, progress_callback),
+        threading.Thread(
+            target=self._monitor,
+            args=(torrent_id, handle, callback),
             daemon=True
-        )
-        thread.start()
+        ).start()
         
         return {"status": "started", "id": torrent_id}
-    
-    def _monitor_progress(self, torrent_id: str, handle, progress_callback: Callable):
-        """Monitor torrent download progress"""
-        print(f"Starting torrent monitor for {torrent_id}")
-        
-        # Wait for metadata
+
+    def _monitor(self, torrent_id, handle, callback: Callable):
+        # Metadata Phase
+        attempts = 0
         while not handle.has_metadata():
-            if self.cancel_events.get(torrent_id, threading.Event()).is_set():
-                progress_callback({"status": "cancelled"})
+            if self.cancel_events[torrent_id].is_set():
+                callback({"status": "cancelled"})
                 return
-            time.sleep(0.1)
+            
+            attempts += 1
+            if attempts % 10 == 0:
+                handle.force_dht_announce()
+                handle.force_reannounce()
+            
+            callback({"status": "fetching_metadata", "peers": handle.status().num_peers})
+            time.sleep(0.3)
         
-        torrent_info = handle.get_torrent_info()
-        progress_callback({
+        info = handle.get_torrent_info()
+        callback({
             "status": "metadata",
-            "name": torrent_info.name(),
-            "total_size": torrent_info.total_size(),
-            "num_files": torrent_info.num_files()
+            "name": info.name(),
+            "total_size": info.total_size(),
+            "num_files": info.num_files()
         })
         
-        # Monitor download progress
-        last_downloaded = 0
-        last_time = time.time()
-        
+        # Download Phase
         while not handle.is_seed():
-            if self.cancel_events.get(torrent_id, threading.Event()).is_set():
+            if self.cancel_events[torrent_id].is_set():
                 self.session.remove_torrent(handle)
-                progress_callback({"status": "cancelled"})
+                if torrent_id in self.handles:
+                    del self.handles[torrent_id]
+                callback({"status": "cancelled"})
                 return
             
-            status = handle.status()
-            current_time = time.time()
-            time_diff = current_time - last_time
+            s = handle.status()
             
-            # Calculate ETA
-            downloaded_bytes = status.total_download
-            bytes_diff = downloaded_bytes - last_downloaded
-            total_size = torrent_info.total_size()
-            remaining_bytes = total_size - downloaded_bytes
+            eta = 0
+            if s.download_rate > 0:
+                remaining = s.total_wanted - s.total_wanted_done
+                eta = int(remaining / s.download_rate)
             
-            # Calculate average speed and ETA
-            if time_diff > 0 and status.download_rate > 0:
-                eta_seconds = remaining_bytes / status.download_rate
-            else:
-                eta_seconds = 0
-            
-            progress_callback({
+            callback({
                 "status": "downloading",
-                "progress": status.progress * 100,
-                "download_rate": status.download_rate,
-                "upload_rate": status.upload_rate,
-                "num_peers": status.num_peers,
-                "num_seeds": status.num_seeds,
-                "total_download": status.total_download,
-                "total_upload": status.total_upload,
-                "eta": int(eta_seconds) if eta_seconds > 0 else 0,  # ETA in seconds
+                "progress": round(s.progress * 100, 2),
+                "download_rate": s.download_rate,
+                "upload_rate": s.upload_rate,
+                "num_peers": s.num_peers,
+                "num_seeds": s.num_seeds,
+                "eta": eta,
+                "state": str(s.state)
             })
             
-            last_downloaded = downloaded_bytes
-            last_time = current_time
-            
-            time.sleep(1)
+            time.sleep(0.5)
         
-        # Download complete
-        progress_callback({
+        # Finished
+        final_name = info.name()
+        save_path = self.download_dir / final_name
+
+        # Normal finished callback
+        callback({
             "status": "finished",
-            "save_path": str(self.download_dir / torrent_info.name())
+            "save_path": str(save_path),
+            "name": final_name
         })
-        
-        print(f"Torrent {torrent_id} completed")
-    
+
+        # 🔥 EXTRA EVENT → triggers toast popup in frontend
+        callback({
+            "event": "completed",
+            "id": torrent_id,
+            "file_path": str(save_path),
+            "name": final_name
+        })
+        print(f"[✔] Torrent finished: {torrent_id}")
+
+
     def cancel_torrent(self, torrent_id: str):
-        """Cancel a torrent download"""
         if torrent_id in self.cancel_events:
             self.cancel_events[torrent_id].set()
-            
-        if torrent_id in self.handles:
-            handle = self.handles[torrent_id]
-            self.session.remove_torrent(handle)
-            del self.handles[torrent_id]
-            
-        return {"status": "cancelled"}
-    
+        return {"status": "cancelling"}
+
     def get_status(self, torrent_id: str):
-        """Get current status of a torrent"""
         if torrent_id not in self.handles:
-            return {"error": "Torrent not found"}
-        
-        handle = self.handles[torrent_id]
-        status = handle.status()
-        
+            return {"error": "not found"}
+        s = self.handles[torrent_id].status()
         return {
-            "progress": status.progress * 100,
-            "download_rate": status.download_rate,
-            "upload_rate": status.upload_rate,
-            "num_peers": status.num_peers,
-            "state": str(status.state)
+            "progress": round(s.progress * 100, 2),
+            "download_rate": s.download_rate,
+            "peers": s.num_peers,
         }
 
-# Global torrent downloader instance
+
+# GLOBAL INSTANCE
 torrent_manager = None
 
 def get_torrent_manager(download_dir: str):

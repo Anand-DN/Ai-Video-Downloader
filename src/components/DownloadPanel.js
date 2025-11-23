@@ -398,66 +398,53 @@ export default function DownloadPanel() {
                   <span className="category-dot red"></span>
                   <span className="category-name">VIDEO + AUDIO</span>
                 </div>
-                <div className="quality-grid-horizontal">
+
+                <div className="quality-grid">
                   {videoInfo.video_formats?.map((format, idx) => (
                     <div
                       key={idx}
-                      className={`quality-chip ${selectedQuality === format.format_id && selectedMode === "video" ? "selected" : ""
-                        } ${recommendedQuality?.format_id === format.format_id ? "recommended" : ""}`}
+                      className={`quality-card ${selectedQuality === format.format_id && selectedMode === "video" ? "selected" : ""} ${recommendedQuality?.format_id === format.format_id ? "recommended" : ""}`}
                       onClick={() => {
                         setSelectedQuality(format.format_id);
                         setSelectedMode("video");
                       }}
                     >
-                      <input
-                        type="radio"
-                        checked={selectedQuality === format.format_id && selectedMode === "video"}
-                        readOnly
-                        className="quality-radio-advanced"
-                      />
-                      <span className="quality-chip-text">
-                        {format.quality} (video+audio)
-                        {format.filesize > 0 && (
-                          <span className="filesize-badge"> • {formatFileSize(format.filesize)}</span>
-                        )}
-                      </span>
                       {recommendedQuality?.format_id === format.format_id && (
-                        <span className="ai-badge-chip">AI ⭐</span>
+                        <span className="recommended-badge">AI ⭐</span>
                       )}
+
+                      <div className="quality-label">{format.quality}</div>
+                      <div className="quality-details">
+                        <span>{format.ext ? format.ext.toUpperCase() : "MP4"}</span>
+                        {format.filesize ? <span>{formatFileSize(format.filesize)}</span> : <span />}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* AUDIO ONLY */}
+              {/* AUDIO */}
               <div className="quality-category">
                 <div className="category-header">
                   <span className="category-dot green"></span>
                   <span className="category-name">AUDIO</span>
                 </div>
-                <div className="quality-grid-horizontal">
+
+                <div className="quality-grid">
                   {videoInfo.audio_formats?.map((format, idx) => (
                     <div
                       key={idx}
-                      className={`quality-chip ${selectedQuality === format.format_id && selectedMode === "audio" ? "selected" : ""
-                        }`}
+                      className={`quality-card ${selectedQuality === format.format_id && selectedMode === "audio" ? "selected" : ""}`}
                       onClick={() => {
                         setSelectedQuality(format.format_id);
                         setSelectedMode("audio");
                       }}
                     >
-                      <input
-                        type="radio"
-                        checked={selectedQuality === format.format_id && selectedMode === "audio"}
-                        readOnly
-                        className="quality-radio-advanced"
-                      />
-                      <span className="quality-chip-text">
-                        {format.ext === 'webm' ? 'WebM Audio' : 'MP3 Audio'}
-                        {format.filesize > 0 && (
-                          <span className="filesize-badge"> • {formatFileSize(format.filesize)}</span>
-                        )}
-                      </span>
+                      <div className="quality-label">{format.ext ? `${format.ext.toUpperCase()} Audio` : "Audio"}</div>
+                      <div className="quality-details">
+                        {format.abr ? <span>{format.abr} kbps</span> : <span>Audio</span>}
+                        {format.filesize ? <span>{formatFileSize(format.filesize)}</span> : <span />}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -518,7 +505,7 @@ function DownloadItem({ item, onCancel }) {
       </div>
 
       <div className="progress-bar-advanced">
-        <div className="progress-fill-advanced" style={{ width: `${item.progress}%` }} />
+        <div className={`progress-fill-advanced ${item.status === "paused" ? "paused-bar" : ""}`} style={{ width: `${item.progress}%` }} />
       </div>
 
       <button onClick={onCancel} className="cancel-btn-advanced">

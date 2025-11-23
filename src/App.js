@@ -4,6 +4,7 @@ import Header from "./components/Header";
 import HistoryPanel from "./components/HistoryPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import TorrentPanel from "./components/TorrentPanel";
+import PlaylistPanel from "./components/PlaylistPanel";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("download");
@@ -28,6 +29,12 @@ export default function App() {
             🧲 Torrent
           </button>
           <button
+            className={`tab ${activeTab === "playlist" ? "active" : ""}`}
+            onClick={() => setActiveTab("playlist")}
+          >
+            📋 Playlist
+          </button>
+          <button
             className={`tab ${activeTab === "history" ? "active" : ""}`}
             onClick={() => setActiveTab("history")}
           >
@@ -38,6 +45,7 @@ export default function App() {
         <div className="fade-in">
           {activeTab === "download" && <DownloadPanel />}
           {activeTab === "torrent" && <TorrentPanel />}
+          {activeTab === "playlist" && <PlaylistPanel />}
           {activeTab === "history" && <HistoryPanel />}
         </div>
       </main>
